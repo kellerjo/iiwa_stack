@@ -111,7 +111,9 @@ public class iiwaSubscriber extends AbstractNodeMain {
   private Subscriber<iiwa_msgs.JointPosition> jointPositionSubscriber;
   private Subscriber<iiwa_msgs.JointPositionVelocity> jointPositionVelocitySubscriber;
   private Subscriber<iiwa_msgs.JointVelocity> jointVelocitySubscriber;
-
+  private Subscriber<std_msgs.Bool> activateFreeHandGuidingModeSubscriber;
+  private Subscriber<std_msgs.Bool> activateFocusedHandGuidingModeSubscriber; 
+  private Subscriber<geometry_msgs.Vector3Stamped> focusedHandGuidingTargetSubscriber;
   private TransformListener tfListener;
 
   // Object to easily build iiwa_msgs from the current robot state
@@ -140,6 +142,10 @@ public class iiwaSubscriber extends AbstractNodeMain {
   private String iiwaName = "iiwa";
   private LBR robot = null;
   private Boolean enforceMessageSequence = false;
+  
+  public geometry_msgs.Vector3Stamped focusedHandGuidingTarget = null;
+  public boolean activateFreeHandGuidingMode = false;
+  public boolean activateFocusedHandGuidingMode = false;
 
   /**
    * Constructs a series of ROS subscribers for messages defined by the iiwa_msgs ROS package.
@@ -467,6 +473,10 @@ public class iiwaSubscriber extends AbstractNodeMain {
     jointPositionSubscriber = connectedNode.newSubscriber(iiwaName + "/command/JointPosition", iiwa_msgs.JointPosition._TYPE, hint);
     jointPositionVelocitySubscriber = connectedNode.newSubscriber(iiwaName + "/command/JointPositionVelocity", iiwa_msgs.JointPositionVelocity._TYPE, hint);
     jointVelocitySubscriber = connectedNode.newSubscriber(iiwaName + "/command/JointVelocity", iiwa_msgs.JointVelocity._TYPE, hint);
+    
+    activateFreeHandGuidingModeSubscriber = connectedNode.newSubscriber(iiwaName + "/command/activateFreeHandGuidingMode", std_msgs.Bool._TYPE, hint);
+    activateFocusedHandGuidingModeSubscriber = connectedNode.newSubscriber(iiwaName + "/command/activateFocusedHandGuidingMode", std_msgs.Bool._TYPE, hint);
+    focusedHandGuidingTargetSubscriber = connectedNode.newSubscriber(iiwaName + "/focusedHandGuidingTarget", geometry_msgs.Vector3Stamped._TYPE, hint);
     tfListener = new TransformListener(connectedNode);
 
     // Subscribers' callbacks
@@ -568,6 +578,27 @@ public class iiwaSubscriber extends AbstractNodeMain {
       }
     });
 
+    activateFreeHandGuidingModeSubscriber.addMessageListener(new MessageListener<std_msgs.Bool>() {
+        @Override
+        public void onNewMessage(std_msgs.Bool b) {
+          activateFreeHandGuidingMode = b.getData();
+        }
+      });
+    
+    activateFocusedHandGuidingModeSubscriber.addMessageListener(new MessageListener<std_msgs.Bool>() {
+        @Override
+        public void onNewMessage(std_msgs.Bool b) {
+          activateFocusedHandGuidingMode = b.getData();
+        }
+      });
+    
+    focusedHandGuidingTargetSubscriber.addMessageListener(new MessageListener<geometry_msgs.Vector3Stamped>() {
+        @Override
+        public void onNewMessage(geometry_msgs.Vector3Stamped v) {
+           focusedHandGuidingTarget = v;
+        }
+      });
+    
     // Creating SmartServo service if a callback has been defined.
     if (configureControlModeCallback != null) {
       configureControlModeServer = node.newServiceServer(iiwaName + "/configuration/ConfigureControlMode", "iiwa_msgs/ConfigureControlMode", configureControlModeCallback);
