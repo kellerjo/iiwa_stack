@@ -53,8 +53,14 @@ import org.ros.node.NodeConfiguration;
 import org.ros.node.NodeMainExecutor;
 import org.ros.node.service.ServiceResponseBuilder;
 
+import com.kuka.common.ThreadUtil;
+import com.kuka.connectivity.motionModel.smartServo.ServoMotion;
+import com.kuka.connectivity.motionModel.smartServo.SmartServo;
+import com.kuka.roboticsAPI.geometricModel.CartDOF;
+import com.kuka.roboticsAPI.geometricModel.Frame;
 import com.kuka.roboticsAPI.geometricModel.SceneGraphObject;
 import com.kuka.roboticsAPI.geometricModel.Workpiece;
+import com.kuka.roboticsAPI.motionModel.controlModeModel.CartesianImpedanceControlMode;
 import com.kuka.roboticsAPI.motionModel.controlModeModel.PositionControlMode;
 
 import de.tum.in.camp.kuka.ros.CommandTypes.CommandType;
@@ -486,6 +492,14 @@ public class ROSSmartServo extends ROSBaseApplication {
     if (rosTool != null) {
       rosTool.moveTool();
     }
+    
+    // check activation triggers
+    if(subscriber.activateFreeHandGuidingMode){
+    	freeHandGuiding();
+    }
+    else if(subscriber.activateFocusedHandGuidingMode){
+    	focusedHandGuiding();
+    }
   }
 
   /**
@@ -651,5 +665,118 @@ public class ROSSmartServo extends ROSBaseApplication {
   protected void moveByCartesianVelocity(geometry_msgs.TwistStamped commandVelocity) {
     activateMotionMode(CommandType.SMART_SERVO_CARTESIAN_VELOCITY);
     motions.cartesianVelocityMotion(motion, commandVelocity, endpointFrame);
+  }
+  
+  void freeHandGuiding(){
+	  
+	// setup
+	
+	//double actualOverrice = SpeedLimits
+	  
+	SpeedLimits.setOverrideRecution(1, false);  
+		
+	Frame initialFrame = robot.getCurrentCartesianPosition(toolFrame);
+	
+	CartesianImpedanceControlMode handGuidanceControlMode = new CartesianImpedanceControlMode();
+	CartesianImpedanceControlMode handGuidanceAxisLimitMode = new CartesianImpedanceControlMode();
+	
+	handGuidanceControlMode.parametrize(CartDOF.TRANSL).setStiffness(0).setDamping(1);
+	handGuidanceControlMode.parametrize(CartDOF.ROT).setStiffness(300).setDamping(1);
+	handGuidanceControlMode.setNullSpaceDamping(1);
+	handGuidanceControlMode.setNullSpaceStiffness(100);
+	
+	handGuidanceAxisLimitMode.parametrize(CartDOF.TRANSL).setStiffness(3000).setDamping(1);
+	handGuidanceAxisLimitMode.parametrize(CartDOF.ROT).setStiffness(300).setDamping(1);
+	
+	
+	double[] external_joint_torques = new double[7];
+	double[] joint_angles = new double[7];
+	double[] axisLimits = new double[7];
+	axisLimits[0] = 170;
+	axisLimits[1] = 120;
+	axisLimits[2] = 170;
+	axisLimits[3] = 120;
+	axisLimits[4] = 170;
+	axisLimits[5] = 120;
+	axisLimits[6] = 175;
+	boolean[] joint_in_danger = new boolean[7];
+	for(int i = 0; i < 7; i++){
+		joint_in_danger[i] = false;
+	}
+	double HGM_jointLimitLockBuffer_deg = 10.0;
+	double HGM_jointLimitReleaseBuffer_deg = 10.14;
+	double HGM_jointTorqueReleaseThreshhold = 2.2;
+	long HGM_enterAxisLimitLockWait_ms = 300;
+   
+	// switch to motion
+	activateMotionMode(CommandType.SMART_SERVO_JOINT_POSITION);
+	
+	motion = controlModeHandler.changeSmartServoControlMode(motion, handGuidanceControlMode);
+
+	  
+	  
+	while(subscriber.activateFreeHandGuidingMode){
+		// axis limit  handling
+		joint_angles = robot.getCurrentJointPosition().get();
+		external_joint_torques = robot.getExternalTorque().getTorqueValues();
+    	
+    	for(int i = 0; i < 7; i++){
+    		
+    		double angle = Math.toDegrees(joint_angles[i]);
+    		
+    		// check if the axis is too close to it's limit
+    		if(				!joint_in_danger[i] 
+    					&& 	Math.abs(angle) >= axisLimits[i] - HGM_jointLimitLockBuffer_deg){
+    			
+    			System.out.println("Locking axis " + (i+1));
+    			
+    			joint_in_danger[i] = true;
+    			motion = controlModeHandler.changeSmartServoControlMode(motion, handGuidanceAxisLimitMode);
+    			
+    			// the robot might bounce a bit after locking, we have to wait so he will not trigger the release himself
+    			ThreadUtil.milliSleep(HGM_enterAxisLimitLockWait_ms);
+    			
+    		// axis can be freed if the user attempts to push it away from it's limit
+    		}else if(		
+    						joint_in_danger[i]
+    					&& 	Math.abs(angle) < axisLimits[i] - HGM_jointLimitReleaseBuffer_deg 
+    					&& 	Math.abs(external_joint_torques[i]) > HGM_jointTorqueReleaseThreshhold
+    					&& 	(joint_angles[i] > 0) != (external_joint_torques[i] > 0)
+    				){
+    			
+    			joint_in_danger[i] = false;
+    			// TODO multi joint danger
+    			
+    			System.out.println("Releasing axis " + (i+1));
+    			motion = controlModeHandler.changeSmartServoControlMode(motion, handGuidanceControlMode);
+    		}
+    		
+    	}
+    	
+    	// if no joint is in danger, set the robot positin to it's current position, so the joint lock will not explode
+    	boolean any_joint_in_danger = false;
+    	for(boolean b : joint_in_danger){
+    		any_joint_in_danger = any_joint_in_danger || b;
+    	}
+    	if(!any_joint_in_danger){
+    		motion.getRuntime().setDestination(robot.getCurrentCartesianPosition(toolFrame).setAlphaRad(initialFrame.getAlphaRad()).setBetaRad(initialFrame.getBetaRad()).setGammaRad(initialFrame.getGammaRad()));
+    	}
+    	ThreadUtil.milliSleep(10);	
+			    	
+	}
+	
+	motion = controlModeHandler.changeSmartServoControlMode(motion, handGuidanceAxisLimitMode);
+	
+	ThreadUtil.milliSleep(333);
+	
+	motion = controlModeHandler.changeSmartServoControlMode(motion, new PositionControlMode(true));
+	
+  }
+  
+  void focusedHandGuiding(){
+	  
+	  while(subscriber.activateFocusedHandGuidingMode){
+		  
+	  }
   }
 }
