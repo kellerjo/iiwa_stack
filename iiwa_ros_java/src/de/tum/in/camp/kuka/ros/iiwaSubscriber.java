@@ -160,6 +160,10 @@ public class iiwaSubscriber extends AbstractNodeMain {
   public iiwaSubscriber(LBR robot, String robotName, TimeProvider timeProvider, Boolean enforceMessageSequence) {
     this(robot, robot.getFlange(), robotName, timeProvider, enforceMessageSequence);
   }
+  
+  public String getIIWAName(){
+	  return iiwaName;
+  }
 
   /**
    * Constructs a series of ROS subscribers for messages defined by the iiwa_msgs ROS package.
