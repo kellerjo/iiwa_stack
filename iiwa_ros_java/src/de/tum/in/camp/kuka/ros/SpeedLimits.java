@@ -236,6 +236,10 @@ public class SpeedLimits {
   public double getOverrideReduction() {
     return overrideReduction;
   }
+  
+  public static double getOverrideRecution() {
+	  return overrideReduction;
+  }
 
   /**
    * Set PTP joint speed limits based on ROS service request

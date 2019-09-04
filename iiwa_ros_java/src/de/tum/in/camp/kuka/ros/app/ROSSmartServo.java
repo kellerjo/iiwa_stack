@@ -53,6 +53,7 @@ import org.ros.node.NodeConfiguration;
 import org.ros.node.NodeMainExecutor;
 import org.ros.node.service.ServiceResponseBuilder;
 
+import com.kuka.roboticsAPI.geometricModel.Frame;
 import com.kuka.roboticsAPI.geometricModel.SceneGraphObject;
 import com.kuka.roboticsAPI.geometricModel.Workpiece;
 import com.kuka.roboticsAPI.motionModel.controlModeModel.PositionControlMode;
@@ -482,10 +483,20 @@ public class ROSSmartServo extends ROSBaseApplication {
 
   @Override
   protected void controlLoop() {
-    moveRobot();
-    if (rosTool != null) {
-      rosTool.moveTool();
-    }
+	 
+	if(subscriber.applySonicToPatient){
+		subscriber.applySonicToPatient = false;
+		
+		
+		applySonicToPatient();
+		
+	}else{
+	  
+	    moveRobot();
+	    if (rosTool != null) {
+	      rosTool.moveTool();
+	    }
+	}
   }
 
   /**
@@ -652,4 +663,32 @@ public class ROSSmartServo extends ROSBaseApplication {
     activateMotionMode(CommandType.SMART_SERVO_CARTESIAN_VELOCITY);
     motions.cartesianVelocityMotion(motion, commandVelocity, endpointFrame);
   }
+  
+  private void applySonicToPatient(){
+	  
+	  	double originalOverride = SpeedLimits.getOverrideRecution();
+	  
+		SpeedLimits.setOverrideRecution(1.0, false);  
+			
+		Frame initialFrame = robot.getCurrentCartesianPosition(toolFrame);
+	  
+		
+		// get target
+		
+		
+		// angle to target
+	  
+		
+		
+		// move till conact detected
+	  
+		// angle to target
+	  
+		// until: angle < threshhold
+		// adjust angle with clarius data 
+		
+		SpeedLimits.setOverrideRecution(originalOverride, false);
+  }
 }
+
+

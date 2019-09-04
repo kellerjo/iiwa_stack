@@ -111,6 +111,7 @@ public class iiwaSubscriber extends AbstractNodeMain {
   private Subscriber<iiwa_msgs.JointPosition> jointPositionSubscriber;
   private Subscriber<iiwa_msgs.JointPositionVelocity> jointPositionVelocitySubscriber;
   private Subscriber<iiwa_msgs.JointVelocity> jointVelocitySubscriber;
+  private Subscriber<std_msgs.Empty> applySonicToPatientSubscriber;
 
   private TransformListener tfListener;
 
@@ -140,6 +141,8 @@ public class iiwaSubscriber extends AbstractNodeMain {
   private String iiwaName = "iiwa";
   private LBR robot = null;
   private Boolean enforceMessageSequence = false;
+  
+  public boolean applySonicToPatient = false;
 
   /**
    * Constructs a series of ROS subscribers for messages defined by the iiwa_msgs ROS package.
@@ -467,6 +470,7 @@ public class iiwaSubscriber extends AbstractNodeMain {
     jointPositionSubscriber = connectedNode.newSubscriber(iiwaName + "/command/JointPosition", iiwa_msgs.JointPosition._TYPE, hint);
     jointPositionVelocitySubscriber = connectedNode.newSubscriber(iiwaName + "/command/JointPositionVelocity", iiwa_msgs.JointPositionVelocity._TYPE, hint);
     jointVelocitySubscriber = connectedNode.newSubscriber(iiwaName + "/command/JointVelocity", iiwa_msgs.JointVelocity._TYPE, hint);
+    applySonicToPatientSubscriber = connectedNode.newSubscriber(iiwaName + "/service/applySonicToPatient", std_msgs.Empty._TYPE, hint);
     tfListener = new TransformListener(connectedNode);
 
     // Subscribers' callbacks
@@ -567,6 +571,13 @@ public class iiwaSubscriber extends AbstractNodeMain {
         currentCommandType = CommandType.SMART_SERVO_JOINT_VELOCITY;
       }
     });
+    
+    applySonicToPatientSubscriber.addMessageListener(new MessageListener<std_msgs.Empty>() {
+        @Override
+        public void onNewMessage(std_msgs.Empty m) {
+          applySonicToPatient = true;
+        }
+      });
 
     // Creating SmartServo service if a callback has been defined.
     if (configureControlModeCallback != null) {
