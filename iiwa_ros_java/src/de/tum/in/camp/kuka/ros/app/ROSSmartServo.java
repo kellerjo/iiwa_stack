@@ -48,14 +48,23 @@ import iiwa_msgs.TimeToDestinationResponse;
 import java.net.URISyntaxException;
 import java.util.List;
 
+import org.apache.commons.math3.geometry.euclidean.threed.Rotation;
+import org.apache.commons.math3.geometry.euclidean.threed.RotationConvention;
+import org.apache.commons.math3.geometry.euclidean.threed.RotationOrder;
+import org.apache.commons.math3.geometry.euclidean.threed.Vector3D;
 import org.ros.exception.ServiceException;
 import org.ros.node.NodeConfiguration;
 import org.ros.node.NodeMainExecutor;
 import org.ros.node.service.ServiceResponseBuilder;
 
+import com.kuka.common.ThreadUtil;
+import com.kuka.connectivity.motionModel.smartServo.ServoMotion;
+import com.kuka.connectivity.motionModel.smartServo.SmartServo;
+import com.kuka.roboticsAPI.geometricModel.CartDOF;
 import com.kuka.roboticsAPI.geometricModel.Frame;
 import com.kuka.roboticsAPI.geometricModel.SceneGraphObject;
 import com.kuka.roboticsAPI.geometricModel.Workpiece;
+import com.kuka.roboticsAPI.motionModel.controlModeModel.CartesianImpedanceControlMode;
 import com.kuka.roboticsAPI.motionModel.controlModeModel.PositionControlMode;
 
 import de.tum.in.camp.kuka.ros.CommandTypes.CommandType;
@@ -483,6 +492,10 @@ public class ROSSmartServo extends ROSBaseApplication {
 
   @Override
   protected void controlLoop() {
+    moveRobot();
+    if (rosTool != null) {
+      rosTool.moveTool();
+    }
 	 
 	if(subscriber.applySonicToPatient){
 		subscriber.applySonicToPatient = false;
@@ -490,13 +503,15 @@ public class ROSSmartServo extends ROSBaseApplication {
 		
 		applySonicToPatient();
 		
-	}else{
-	  
-	    moveRobot();
-	    if (rosTool != null) {
-	      rosTool.moveTool();
-	    }
 	}
+    
+    // check activation triggers
+    if(subscriber.activateFreeHandGuidingMode){
+    	freeHandGuiding();
+    }
+    else if(subscriber.activateFocusedHandGuidingMode){
+    	focusedHandGuiding();
+    }
   }
 
   /**
@@ -662,6 +677,327 @@ public class ROSSmartServo extends ROSBaseApplication {
   protected void moveByCartesianVelocity(geometry_msgs.TwistStamped commandVelocity) {
     activateMotionMode(CommandType.SMART_SERVO_CARTESIAN_VELOCITY);
     motions.cartesianVelocityMotion(motion, commandVelocity, endpointFrame);
+  }
+  
+  void freeHandGuiding(){
+	  
+	// setup
+	Logger.info("starting free handguiding mode...");
+	
+	double actualOverride = SpeedLimits.getOverrideRecution();
+	  
+	SpeedLimits.setOverrideRecution(1.0, false);  
+		
+	Frame initialFrame = robot.getCurrentCartesianPosition(toolFrame);
+	
+	CartesianImpedanceControlMode handGuidanceControlMode = new CartesianImpedanceControlMode();
+	CartesianImpedanceControlMode handGuidanceAxisLimitMode = new CartesianImpedanceControlMode();
+	
+	handGuidanceControlMode.parametrize(CartDOF.TRANSL).setStiffness(0).setDamping(1);
+	handGuidanceControlMode.parametrize(CartDOF.ROT).setStiffness(300).setDamping(1);
+	handGuidanceControlMode.setNullSpaceDamping(1);
+	handGuidanceControlMode.setNullSpaceStiffness(100);
+	
+	handGuidanceAxisLimitMode.parametrize(CartDOF.TRANSL).setStiffness(3000).setDamping(1);
+	handGuidanceAxisLimitMode.parametrize(CartDOF.ROT).setStiffness(300).setDamping(1);
+	
+	
+	double[] external_joint_torques = new double[7];
+	double[] joint_angles = new double[7];
+	double[] axisLimits = new double[7];
+	axisLimits[0] = 170;
+	axisLimits[1] = 120;
+	axisLimits[2] = 170;
+	axisLimits[3] = 120;
+	axisLimits[4] = 170;
+	axisLimits[5] = 120;
+	axisLimits[6] = 175;
+	boolean[] joint_in_danger = new boolean[7];
+	for(int i = 0; i < 7; i++){
+		joint_in_danger[i] = false;
+	}
+	double HGM_jointLimitLockBuffer_deg = 10.0;
+	double HGM_jointLimitReleaseBuffer_deg = 10.14;
+	double HGM_jointTorqueReleaseThreshhold = 2.2;
+	long HGM_enterAxisLimitLockWait_ms = 300;
+   
+	// switch to motion
+	activateMotionMode(CommandType.SMART_SERVO_JOINT_POSITION);
+	
+	motion = controlModeHandler.changeSmartServoControlMode(motion, handGuidanceControlMode);
+
+	  
+	  
+	while(subscriber.activateFreeHandGuidingMode){
+		// axis limit  handling
+		joint_angles = robot.getCurrentJointPosition().get();
+		external_joint_torques = robot.getExternalTorque().getTorqueValues();
+    	
+    	for(int i = 0; i < 7; i++){
+    		
+    		double angle = Math.toDegrees(joint_angles[i]);
+    		
+    		// check if the axis is too close to it's limit
+    		if(				!joint_in_danger[i] 
+    					&& 	Math.abs(angle) >= axisLimits[i] - HGM_jointLimitLockBuffer_deg){
+    			
+    			System.out.println("Locking axis " + (i+1));
+    			
+    			joint_in_danger[i] = true;
+    			motion.getRuntime().changeControlModeSettings(handGuidanceAxisLimitMode);
+    			
+    			// the robot might bounce a bit after locking, we have to wait so he will not trigger the release himself
+    			ThreadUtil.milliSleep(HGM_enterAxisLimitLockWait_ms);
+    			
+    		// axis can be freed if the user attempts to push it away from it's limit
+    		}else if(		
+    						joint_in_danger[i]
+    					&& 	Math.abs(angle) < axisLimits[i] - HGM_jointLimitReleaseBuffer_deg 
+    					&& 	Math.abs(external_joint_torques[i]) > HGM_jointTorqueReleaseThreshhold
+    					&& 	(joint_angles[i] > 0) != (external_joint_torques[i] > 0)
+    				){
+    			
+    			joint_in_danger[i] = false;
+    			// TODO multi joint danger
+    			
+    			System.out.println("Releasing axis " + (i+1));
+    			motion.getRuntime().changeControlModeSettings(handGuidanceControlMode);
+    		}
+    		
+    	}
+    	
+    	// if no joint is in danger, set the robot positin to it's current position, so the joint lock will not explode
+    	boolean any_joint_in_danger = false;
+    	for(boolean b : joint_in_danger){
+    		any_joint_in_danger = any_joint_in_danger || b;
+    	}
+    	if(!any_joint_in_danger){
+    		motion.getRuntime().setDestination(robot.getCurrentCartesianPosition(toolFrame).setAlphaRad(initialFrame.getAlphaRad()).setBetaRad(initialFrame.getBetaRad()).setGammaRad(initialFrame.getGammaRad()));
+    	}
+    	ThreadUtil.milliSleep(9);	
+			    	
+	}
+	
+	Logger.info("exiting free handguiding mode...");
+	
+	motion.getRuntime().changeControlModeSettings(handGuidanceAxisLimitMode);
+	
+	ThreadUtil.milliSleep(333);
+	
+	motion = controlModeHandler.changeSmartServoControlMode(motion, new PositionControlMode(true));
+	
+	SpeedLimits.setOverrideRecution(actualOverride, false); 
+	
+  }
+  
+  void focusedHandGuiding(){
+	  	// setup
+		
+	  	final double maxStartingAngle_deg = 15;
+	  	final double minZDistanceToTarget_mm = 30;
+	  	
+	  	
+	  	final double HGM_jointLimitLockBuffer_deg = 7.0;
+	  	final double HGM_releaseLockBuffer_deg = 0.2;
+	  	
+	  	final double HGM_jointLimitReleaseBuffer_deg = HGM_jointLimitLockBuffer_deg + HGM_releaseLockBuffer_deg;
+	  	final double HGM_releaseLockBuffer_mm = 3;
+	  	final double HGM_zDistanceReleaseBuffer_mm = minZDistanceToTarget_mm + HGM_releaseLockBuffer_mm;
+	  	
+	  	final double HGM_jointTorqueReleaseThreshhold = 2.2;
+	  	final long HGM_enterAxisLimitLockWait_ms = 300;
+	  	
+	  	final double handGuidanceXYStiffness = 500;
+		final double handGuidanceZStiffness = 10;
+		final double handGuidanceROTStiffness = 300;
+		
+		final double handGuidanceAxisLimitXYZStiffness = 2000;
+		
+		final double HGM_zAxisTorqueReleaseThreshhold = 3;
+		
+		double[] external_joint_torques = new double[7];
+		double[] joint_angles = new double[7];
+		double[] axisLimits = new double[7];
+		axisLimits[0] = 170;
+		axisLimits[1] = 120;
+		axisLimits[2] = 170;
+		axisLimits[3] = 120;
+		axisLimits[4] = 170;
+		axisLimits[5] = 120;
+		axisLimits[6] = 175;
+		boolean[] joint_in_danger = new boolean[7];
+		for(int i = 0; i < 7; i++){
+			joint_in_danger[i] = false;
+		}
+			
+	  
+	  	Logger.info("starting focused handguiding mode...");
+		
+		Vector3D targetPoint = new Vector3D(subscriber.focusedHandGuidingTarget.getVector().getX(),subscriber.focusedHandGuidingTarget.getVector().getY(),subscriber.focusedHandGuidingTarget.getVector().getZ());
+		
+		// TODO transform into base
+		if(subscriber.focusedHandGuidingTarget.getHeader().getFrameId() != (subscriber.getIIWAName().concat("_link_0"))){
+			Logger.warn("Target vector for focused hand guiding is in frame " + subscriber.focusedHandGuidingTarget.getHeader().getFrameId() + ".");
+			Logger.warn("Please define it in the robot base frame");
+			Logger.error("aborting focused hand guiding mode");
+			return;
+		}
+		
+		
+		CartesianImpedanceControlMode handGuidanceControlMode = new CartesianImpedanceControlMode();
+		CartesianImpedanceControlMode handGuidanceAxisLimitMode = new CartesianImpedanceControlMode();
+		
+		
+		
+		handGuidanceControlMode.parametrize(CartDOF.TRANSL).setStiffness(handGuidanceXYStiffness).setDamping(1);
+		handGuidanceControlMode.parametrize(CartDOF.Z).setStiffness(handGuidanceZStiffness);
+		handGuidanceControlMode.parametrize(CartDOF.ROT).setStiffness(handGuidanceROTStiffness).setDamping(1);
+		handGuidanceControlMode.setNullSpaceDamping(1);
+		handGuidanceControlMode.setNullSpaceStiffness(100);
+		
+		handGuidanceAxisLimitMode.parametrize(CartDOF.TRANSL).setStiffness(handGuidanceAxisLimitXYZStiffness).setDamping(1);
+		handGuidanceAxisLimitMode.parametrize(CartDOF.ROT).setStiffness(300).setDamping(1);
+		
+		Frame toolPosition = robot.getCurrentCartesianPosition(toolFrame).copy();
+		Frame goalOrientation = robot.getCurrentCartesianPosition(toolFrame).copy();
+    	Vector3D toolPoint = new Vector3D(toolPosition.getX(), toolPosition.getY(), toolPosition.getZ());
+		
+		
+		Vector3D eeToTargetLine = (targetPoint.subtract(toolPoint)).normalize();
+    	Rotation toolRotation = new Rotation(RotationOrder.ZYX, RotationConvention.VECTOR_OPERATOR, toolPosition.getAlphaRad(), toolPosition.getBetaRad(),toolPosition.getGammaRad());
+    	Vector3D toolLine = toolRotation.applyTo(new Vector3D(0,0,1)).normalize();
+    	Rotation toolToTargetRotation = new Rotation(toolLine, eeToTargetLine);
+    	Rotation finalRotation = toolToTargetRotation.compose(toolRotation, RotationConvention.VECTOR_OPERATOR);
+    	double[] res = finalRotation.getAngles(RotationOrder.ZYX, RotationConvention.VECTOR_OPERATOR);
+    	
+    	double angleToTarget = Math.toDegrees(Vector3D.angle(toolLine, eeToTargetLine));
+    	
+    	if(angleToTarget > maxStartingAngle_deg)
+    	{
+    		Logger.error("The tcp is " + angleToTarget + " degrees away from the rotating target. \n The limit is " + maxStartingAngle_deg + " degrees. \n Focused hand guiding will not be activated");
+    		return;
+    	}
+    	
+    	if(toolPosition.getZ() - targetPoint.getZ() < minZDistanceToTarget_mm){
+    		Logger.error("The robot is too close to the target, aborting focused hand guiding mode");
+    		return;
+    	}
+    	
+    	boolean zAxisInDanger = false;
+    	
+    	
+    	double actualOverride = SpeedLimits.getOverrideRecution();
+
+		SpeedLimits.setOverrideRecution(0.1, false);
+    	
+    	linearMotion.getRuntime().setDestination(robot.getCurrentCartesianPosition(toolFrame).setAlphaRad(res[0]).setBetaRad(res[1]).setGammaRad(res[2]));
+    	
+    	linearMotion.getRuntime().updateWithRealtimeSystem();
+    	// we want to start the handguiding with the tool rotated to the target
+    	while(!linearMotion.getRuntime().isDestinationReached()){
+    		linearMotion.getRuntime().updateWithRealtimeSystem();
+    	}
+    	
+ 		// switch to LINEAR motion
+ 		activateMotionMode(CommandType.SMART_SERVO_CARTESIAN_POSE_LIN);
+
+		SpeedLimits.setOverrideRecution(1.0, false);
+		
+
+		linearMotion = controlModeHandler.changeSmartServoControlMode(linearMotion, handGuidanceControlMode);
+
+		  
+		  
+		while(subscriber.activateFocusedHandGuidingMode){
+			// axis limit  handling
+			joint_angles = robot.getCurrentJointPosition().get();
+			external_joint_torques = robot.getExternalTorque().getTorqueValues();
+	    	
+	    	for(int i = 0; i < 7; i++){
+	    		
+	    		double angle = Math.toDegrees(joint_angles[i]);
+	    		
+	    		// check if the axis is too close to it's limit
+	    		if(				!joint_in_danger[i] 
+	    					&& 	Math.abs(angle) >= axisLimits[i] - HGM_jointLimitLockBuffer_deg){
+	    			
+	    			System.out.println("axis " + (i+1) + " is to close to it's axis limit");
+	    			
+	    			joint_in_danger[i] = true;
+	    			linearMotion.getRuntime().changeControlModeSettings(handGuidanceAxisLimitMode);
+	    			
+	    			// the robot might bounce a bit after locking, we have to wait so he will not trigger the release himself
+	    			ThreadUtil.milliSleep(HGM_enterAxisLimitLockWait_ms);
+	    			
+	    		// axis can be freed if the user attempts to push it away from it's limit
+	    		}else if(		
+	    						joint_in_danger[i]
+	    					&& 	Math.abs(angle) < axisLimits[i] - HGM_jointLimitReleaseBuffer_deg 
+	    					&& 	Math.abs(external_joint_torques[i]) > HGM_jointTorqueReleaseThreshhold
+	    					&& 	(joint_angles[i] > 0) != (external_joint_torques[i] > 0)
+	    				){
+	    			
+	    			joint_in_danger[i] = false;
+	    			// TODO multi joint danger
+	    			
+	    			System.out.println("axis " + (i+1) + " was moved back to safety");
+	    			linearMotion.getRuntime().changeControlModeSettings(handGuidanceControlMode);
+	    		}
+	    		
+	    	}
+	    	
+	    	// if no joint is in danger, set the robot positin to it's current position, so the joint lock will not explode
+	    	boolean any_joint_in_danger = false;
+	    	for(boolean b : joint_in_danger){
+	    		any_joint_in_danger = any_joint_in_danger || b;
+	    	}
+	    	
+	    	if(!any_joint_in_danger){
+	    	
+	    		// z_distance limit handling
+		    	
+		    	toolPosition = robot.getCurrentCartesianPosition(toolFrame);
+	        	goalOrientation = toolPosition.copy();
+	        	toolPoint = new Vector3D(toolPosition.getX(), toolPosition.getY(), toolPosition.getZ());
+		    	
+		    	double zDistance = toolPoint.getZ() - targetPoint.getZ();
+		    	
+		    	if(!zAxisInDanger && zDistance < minZDistanceToTarget_mm){
+		    		Logger.info("Too close to rotation point. Locking robot");
+		    		linearMotion.getRuntime().changeControlModeSettings(handGuidanceAxisLimitMode);
+		    		zAxisInDanger = true;
+		    		
+		    	}else if(zAxisInDanger && zDistance >= HGM_zDistanceReleaseBuffer_mm && robot.getExternalForceTorque(toolFrame).getTorque().getZ() < -HGM_zAxisTorqueReleaseThreshhold){
+		    		Logger.info("Releasing robot again...");
+		    		linearMotion.getRuntime().changeControlModeSettings(handGuidanceControlMode);
+		    		zAxisInDanger = false;
+		    	}else if(!zAxisInDanger){
+	    		
+		    		eeToTargetLine = (targetPoint.subtract(toolPoint)).normalize();
+			    	toolRotation = new Rotation(RotationOrder.ZYX, RotationConvention.VECTOR_OPERATOR, toolPosition.getAlphaRad(), toolPosition.getBetaRad(),toolPosition.getGammaRad());
+			    	toolLine = toolRotation.applyTo(new Vector3D(0,0,1)).normalize();
+			    	toolToTargetRotation = new Rotation(toolLine, eeToTargetLine);
+			    	finalRotation = toolToTargetRotation.compose(toolRotation, RotationConvention.VECTOR_OPERATOR);
+			    	
+			    	
+			    	res = finalRotation.getAngles(RotationOrder.ZYX, RotationConvention.VECTOR_OPERATOR);
+		    		
+		    		linearMotion.getRuntime().setDestination(robot.getCurrentCartesianPosition(toolFrame).setAlphaRad(res[0]).setBetaRad(res[1]).setGammaRad(res[2]));
+		    	}
+	    	}
+	    	ThreadUtil.milliSleep(16);	
+				    	
+		}
+		
+		Logger.info("exiting free handguiding mode...");
+		
+		motion.getRuntime().changeControlModeSettings(handGuidanceAxisLimitMode);
+		
+		ThreadUtil.milliSleep(333);
+		
+		motion = controlModeHandler.changeSmartServoControlMode(motion, new PositionControlMode(true));
+		
+		SpeedLimits.setOverrideRecution(actualOverride, false); 
   }
   
   private void applySonicToPatient(){
