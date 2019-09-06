@@ -111,10 +111,12 @@ public class iiwaSubscriber extends AbstractNodeMain {
   private Subscriber<iiwa_msgs.JointPosition> jointPositionSubscriber;
   private Subscriber<iiwa_msgs.JointPositionVelocity> jointPositionVelocitySubscriber;
   private Subscriber<iiwa_msgs.JointVelocity> jointVelocitySubscriber;
-  private Subscriber<std_msgs.Empty> applySonicToPatientSubscriber;
+  private Subscriber<std_msgs.Bool> applySonicToPatientSubscriber;
   private Subscriber<std_msgs.Bool> activateFreeHandGuidingModeSubscriber;
-  private Subscriber<std_msgs.Bool> activateFocusedHandGuidingModeSubscriber; 
+  private Subscriber<std_msgs.Bool> activateFocusedHandGuidingModeSubscriber;
   private Subscriber<geometry_msgs.Vector3Stamped> focusedHandGuidingTargetSubscriber;
+  private Subscriber<std_msgs.Bool> clariusButtonSubscriber;
+  private Subscriber<std_msgs.Float32> robotDistanceSubscriber;
   private TransformListener tfListener;
 
   // Object to easily build iiwa_msgs from the current robot state
@@ -146,8 +148,10 @@ public class iiwaSubscriber extends AbstractNodeMain {
   
   public boolean applySonicToPatient = false;
   public geometry_msgs.Vector3Stamped focusedHandGuidingTarget = null;
+  public geometry_msgs.PoseStamped currentTarget = null;
   public boolean activateFreeHandGuidingMode = false;
   public boolean activateFocusedHandGuidingMode = false;
+  public float lastDistanceBetweenRobots_mm = -1;
 
   /**
    * Constructs a series of ROS subscribers for messages defined by the iiwa_msgs ROS package.
@@ -162,10 +166,7 @@ public class iiwaSubscriber extends AbstractNodeMain {
   public iiwaSubscriber(LBR robot, String robotName, TimeProvider timeProvider, Boolean enforceMessageSequence) {
     this(robot, robot.getFlange(), robotName, timeProvider, enforceMessageSequence);
   }
-  
-  public String getIIWAName(){
-	  return iiwaName;
-  }
+
 
   /**
    * Constructs a series of ROS subscribers for messages defined by the iiwa_msgs ROS package.
@@ -479,11 +480,13 @@ public class iiwaSubscriber extends AbstractNodeMain {
     jointPositionSubscriber = connectedNode.newSubscriber(iiwaName + "/command/JointPosition", iiwa_msgs.JointPosition._TYPE, hint);
     jointPositionVelocitySubscriber = connectedNode.newSubscriber(iiwaName + "/command/JointPositionVelocity", iiwa_msgs.JointPositionVelocity._TYPE, hint);
     jointVelocitySubscriber = connectedNode.newSubscriber(iiwaName + "/command/JointVelocity", iiwa_msgs.JointVelocity._TYPE, hint);
-    applySonicToPatientSubscriber = connectedNode.newSubscriber(iiwaName + "/service/applySonicToPatient", std_msgs.Empty._TYPE, hint);
+    applySonicToPatientSubscriber = connectedNode.newSubscriber(iiwaName + "/service/applySonicToPatient", std_msgs.Bool._TYPE, hint);
     
-    activateFreeHandGuidingModeSubscriber = connectedNode.newSubscriber(iiwaName + "/command/activateFreeHandGuidingMode", std_msgs.Bool._TYPE, hint);
+    activateFreeHandGuidingModeSubscriber = connectedNode.newSubscriber(iiwaName + "/service/activateFocusedHandGuidingMode", std_msgs.Bool._TYPE, hint);
     activateFocusedHandGuidingModeSubscriber = connectedNode.newSubscriber(iiwaName + "/command/activateFocusedHandGuidingMode", std_msgs.Bool._TYPE, hint);
     focusedHandGuidingTargetSubscriber = connectedNode.newSubscriber(iiwaName + "/focusedHandGuidingTarget", geometry_msgs.Vector3Stamped._TYPE, hint);
+    clariusButtonSubscriber = connectedNode.newSubscriber("KeyboardInput/ButtonPressed", std_msgs.Bool._TYPE, hint);
+    robotDistanceSubscriber = connectedNode.newSubscriber("combined/state/distance_between_robots", std_msgs.Float32._TYPE, hint);
     tfListener = new TransformListener(connectedNode);
 
     // Subscribers' callbacks
@@ -585,10 +588,10 @@ public class iiwaSubscriber extends AbstractNodeMain {
       }
     });
     
-    applySonicToPatientSubscriber.addMessageListener(new MessageListener<std_msgs.Empty>() {
+    applySonicToPatientSubscriber.addMessageListener(new MessageListener<std_msgs.Bool>() {
         @Override
-        public void onNewMessage(std_msgs.Empty m) {
-          applySonicToPatient = true;
+        public void onNewMessage(std_msgs.Bool b) {
+          applySonicToPatient = b.getData();
         }
       });
 
@@ -610,6 +613,21 @@ public class iiwaSubscriber extends AbstractNodeMain {
         @Override
         public void onNewMessage(geometry_msgs.Vector3Stamped v) {
            focusedHandGuidingTarget = v;
+        }
+      });
+    
+    clariusButtonSubscriber.addMessageListener(new MessageListener<std_msgs.Bool>() {
+        @Override
+        public void onNewMessage(std_msgs.Bool b) {
+           activateFreeHandGuidingMode = b.getData();
+        }
+      });
+    
+    robotDistanceSubscriber.addMessageListener(new MessageListener<std_msgs.Float32>() {
+        @Override
+        public void onNewMessage(std_msgs.Float32 f) {
+           lastDistanceBetweenRobots_mm = (f.getData() * 1000);
+           Logger.info(String.valueOf(lastDistanceBetweenRobots_mm));
         }
       });
     

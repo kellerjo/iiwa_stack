@@ -44,6 +44,8 @@ import com.kuka.roboticsAPI.geometricModel.ObjectFrame;
  */
 public class iiwaPublisher extends AbstractNodeMain {
 
+	
+  private Publisher<std_msgs.Bool> activateCollisionCheckerPublisher;
   // ROSJava Publishers for iiwa_msgs
   // Cartesian Message Publishers
   private Publisher<iiwa_msgs.CartesianPose> cartesianPosePublisher;
@@ -83,6 +85,8 @@ public class iiwaPublisher extends AbstractNodeMain {
   private sensor_msgs.JointState js;
   private iiwa_msgs.JointVelocity jv;
   private std_msgs.Time t;
+  private std_msgs.Bool activateCollisionChecker;
+  
 
   // private std_msgs.Bool flangeButton; // MEDIAFLANGEIO
 
@@ -107,6 +111,7 @@ public class iiwaPublisher extends AbstractNodeMain {
     jv = helper.buildMessage(iiwa_msgs.JointVelocity._TYPE);
     js = helper.buildMessage(sensor_msgs.JointState._TYPE);
     t = helper.buildMessage(std_msgs.Time._TYPE);
+    activateCollisionChecker = helper.buildMessage(std_msgs.Bool._TYPE);
     // flangeButton = helper.buildMessage(std_msgs.Bool._TYPE); // MEDIAFLANGEIO
   }
 
@@ -131,6 +136,10 @@ public class iiwaPublisher extends AbstractNodeMain {
   public String getIIWAName() {
     return robotName;
   }
+  
+  public MessageGenerator getHelper(){
+	  return helper;
+  }
 
   /**
    * @see org.ros.node.NodeMain#getDefaultNodeName()
@@ -140,6 +149,15 @@ public class iiwaPublisher extends AbstractNodeMain {
     return GraphName.of(robotName + "/publisher");
   }
 
+  public void sendActivateCollisionCheckerSignal(boolean activate){
+	  if(activateCollisionCheckerPublisher.getNumberOfSubscribers() > 0){
+		  activateCollisionChecker.setData(activate);
+		  activateCollisionCheckerPublisher.publish(activateCollisionChecker);
+	  }else{
+		  Logger.error("No node is listening to the collision checker activatoin!");
+	  }
+  }
+  
   /**
    * This method is called when the <i>execute</i> method from a <i>nodeMainExecutor</i> is called.<br>
    * Do <b>NOT</b> manually call this.
@@ -151,6 +169,8 @@ public class iiwaPublisher extends AbstractNodeMain {
   public void onStart(final ConnectedNode connectedNode) {
     node = connectedNode;
 
+    activateCollisionCheckerPublisher = connectedNode.newPublisher("/combined/service/activateCollisionChecker", std_msgs.Bool._TYPE);
+    
     cartesianPosePublisher = connectedNode.newPublisher(robotName + "/state/CartesianPose", iiwa_msgs.CartesianPose._TYPE);
     cartesianWrenchPublisher = connectedNode.newPublisher(robotName + "/state/CartesianWrench", iiwa_msgs.CartesianWrench._TYPE);
 
@@ -236,6 +256,7 @@ public class iiwaPublisher extends AbstractNodeMain {
       jointStatesPublisher.publish(js);
     }
 
+    
     // Uncomment if using a Media Flange IO. // MEDIAFLANGEIO
     // if (mediaFlange != null && mediaFlangeButtonPublisher.getNumberOfSubscribers() > 0) {
     // flangeButton.setData(mediaFlange.getUserButton());

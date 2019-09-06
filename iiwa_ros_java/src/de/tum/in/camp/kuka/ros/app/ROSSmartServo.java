@@ -27,6 +27,8 @@
 
 package de.tum.in.camp.kuka.ros.app;
 
+import static com.kuka.roboticsAPI.motionModel.BasicMotions.lin;
+import static com.kuka.roboticsAPI.motionModel.BasicMotions.linRel;
 import geometry_msgs.PoseStamped;
 import iiwa_msgs.ConfigureControlModeRequest;
 import iiwa_msgs.ConfigureControlModeResponse;
@@ -56,14 +58,21 @@ import org.ros.exception.ServiceException;
 import org.ros.node.NodeConfiguration;
 import org.ros.node.NodeMainExecutor;
 import org.ros.node.service.ServiceResponseBuilder;
+import org.ros.rosjava.tf.Transform;
+import org.ros.rosjava.tf.pubsub.TransformListener;
+
+import utils.RotationHandler;
 
 import com.kuka.common.ThreadUtil;
 import com.kuka.connectivity.motionModel.smartServo.ServoMotion;
 import com.kuka.connectivity.motionModel.smartServo.SmartServo;
+import com.kuka.roboticsAPI.conditionModel.ForceComponentCondition;
 import com.kuka.roboticsAPI.geometricModel.CartDOF;
 import com.kuka.roboticsAPI.geometricModel.Frame;
 import com.kuka.roboticsAPI.geometricModel.SceneGraphObject;
 import com.kuka.roboticsAPI.geometricModel.Workpiece;
+import com.kuka.roboticsAPI.geometricModel.math.CoordinateAxis;
+import com.kuka.roboticsAPI.motionModel.IMotionContainer;
 import com.kuka.roboticsAPI.motionModel.controlModeModel.CartesianImpedanceControlMode;
 import com.kuka.roboticsAPI.motionModel.controlModeModel.PositionControlMode;
 
@@ -497,14 +506,6 @@ public class ROSSmartServo extends ROSBaseApplication {
       rosTool.moveTool();
     }
 	 
-	if(subscriber.applySonicToPatient){
-		subscriber.applySonicToPatient = false;
-		
-		
-		applySonicToPatient();
-		
-	}
-    
     // check activation triggers
     if(subscriber.activateFreeHandGuidingMode){
     	freeHandGuiding();
@@ -512,6 +513,10 @@ public class ROSSmartServo extends ROSBaseApplication {
     else if(subscriber.activateFocusedHandGuidingMode){
     	focusedHandGuiding();
     }
+    else if(subscriber.applySonicToPatient){
+		applySonicToPatient();	
+	}
+    
   }
 
   /**
@@ -684,7 +689,9 @@ public class ROSSmartServo extends ROSBaseApplication {
 	// setup
 	Logger.info("starting free handguiding mode...");
 	
-	double actualOverride = SpeedLimits.getOverrideRecution();
+	publisher.sendActivateCollisionCheckerSignal(true);
+	
+	double originalOverride = SpeedLimits.getOverrideRecution();
 	  
 	SpeedLimits.setOverrideRecution(1.0, false);  
 		
@@ -717,17 +724,23 @@ public class ROSSmartServo extends ROSBaseApplication {
 		joint_in_danger[i] = false;
 	}
 	double HGM_jointLimitLockBuffer_deg = 10.0;
-	double HGM_jointLimitReleaseBuffer_deg = 10.14;
-	double HGM_jointTorqueReleaseThreshhold = 2.2;
-	long HGM_enterAxisLimitLockWait_ms = 300;
+	double HGM_jointLimitReleaseBuffer_deg = HGM_jointLimitLockBuffer_deg + 0.1;
+	double HGM_jointTorqueReleaseThreshhold = 2;
+	float HGM_maxDistanceBetweenRobots_mm = 200;
+	float HGM_distanceBetweenRobotBackToSafety_mm = HGM_maxDistanceBetweenRobots_mm + 5;
+	float HGM_minRobotDistMoveback_mm = 1;
+	long HGM_enterAxisLimitLockWait_ms = 440;
    
 	// switch to motion
 	activateMotionMode(CommandType.SMART_SERVO_JOINT_POSITION);
 	
 	motion = controlModeHandler.changeSmartServoControlMode(motion, handGuidanceControlMode);
-
+	boolean robot_collision_danger = false;
 	  
+	float prevRobotDist = -1;
 	  
+	ThreadUtil.milliSleep(1000);
+	
 	while(subscriber.activateFreeHandGuidingMode){
 		// axis limit  handling
 		joint_angles = robot.getCurrentJointPosition().get();
@@ -772,9 +785,23 @@ public class ROSSmartServo extends ROSBaseApplication {
     		any_joint_in_danger = any_joint_in_danger || b;
     	}
     	if(!any_joint_in_danger){
-    		motion.getRuntime().setDestination(robot.getCurrentCartesianPosition(toolFrame).setAlphaRad(initialFrame.getAlphaRad()).setBetaRad(initialFrame.getBetaRad()).setGammaRad(initialFrame.getGammaRad()));
+    		
+    		// check danger of robot collision
+    		
+    		if(!robot_collision_danger && (subscriber.lastDistanceBetweenRobots_mm < HGM_maxDistanceBetweenRobots_mm)){
+    			robot_collision_danger = true;
+    			motion.getRuntime().changeControlModeSettings(handGuidanceAxisLimitMode);
+    			Logger.warn("robot is too close to other robot");
+    		}else if(robot_collision_danger && subscriber.lastDistanceBetweenRobots_mm >= HGM_distanceBetweenRobotBackToSafety_mm){
+    			robot_collision_danger = false;
+    			Logger.info("releasing the robot again");
+    			motion.getRuntime().changeControlModeSettings(handGuidanceControlMode);
+    		}else if(!robot_collision_danger || (robot_collision_danger && (subscriber.lastDistanceBetweenRobots_mm - prevRobotDist) > HGM_minRobotDistMoveback_mm)){
+    			motion.getRuntime().setDestination(robot.getCurrentCartesianPosition(toolFrame).setAlphaRad(initialFrame.getAlphaRad()).setBetaRad(initialFrame.getBetaRad()).setGammaRad(initialFrame.getGammaRad()));
+    		}
     	}
-    	ThreadUtil.milliSleep(9);	
+    	prevRobotDist = subscriber.lastDistanceBetweenRobots_mm;
+    	ThreadUtil.milliSleep(7);	
 			    	
 	}
 	
@@ -786,13 +813,16 @@ public class ROSSmartServo extends ROSBaseApplication {
 	
 	motion = controlModeHandler.changeSmartServoControlMode(motion, new PositionControlMode(true));
 	
-	SpeedLimits.setOverrideRecution(actualOverride, false); 
+	SpeedLimits.setOverrideRecution(originalOverride, false);
+	publisher.sendActivateCollisionCheckerSignal(false);
 	
   }
   
   void focusedHandGuiding(){
 	  	// setup
-		
+	
+	  	RotationHandler rotationHandler = new RotationHandler();
+	  
 	  	final double maxStartingAngle_deg = 15;
 	  	final double minZDistanceToTarget_mm = 30;
 	  	
@@ -815,6 +845,8 @@ public class ROSSmartServo extends ROSBaseApplication {
 		
 		final double HGM_zAxisTorqueReleaseThreshhold = 3;
 		
+		final double HGM_minRotationDifAngle_deg = 0.05;
+		
 		double[] external_joint_torques = new double[7];
 		double[] joint_angles = new double[7];
 		double[] axisLimits = new double[7];
@@ -836,7 +868,7 @@ public class ROSSmartServo extends ROSBaseApplication {
 		Vector3D targetPoint = new Vector3D(subscriber.focusedHandGuidingTarget.getVector().getX(),subscriber.focusedHandGuidingTarget.getVector().getY(),subscriber.focusedHandGuidingTarget.getVector().getZ());
 		
 		// TODO transform into base
-		if(subscriber.focusedHandGuidingTarget.getHeader().getFrameId() != (subscriber.getIIWAName().concat("_link_0"))){
+		if(subscriber.focusedHandGuidingTarget.getHeader().getFrameId() != robotBaseFrameID){
 			Logger.warn("Target vector for focused hand guiding is in frame " + subscriber.focusedHandGuidingTarget.getHeader().getFrameId() + ".");
 			Logger.warn("Please define it in the robot base frame");
 			Logger.error("aborting focused hand guiding mode");
@@ -859,18 +891,9 @@ public class ROSSmartServo extends ROSBaseApplication {
 		handGuidanceAxisLimitMode.parametrize(CartDOF.ROT).setStiffness(300).setDamping(1);
 		
 		Frame toolPosition = robot.getCurrentCartesianPosition(toolFrame).copy();
-		Frame goalOrientation = robot.getCurrentCartesianPosition(toolFrame).copy();
-    	Vector3D toolPoint = new Vector3D(toolPosition.getX(), toolPosition.getY(), toolPosition.getZ());
-		
-		
-		Vector3D eeToTargetLine = (targetPoint.subtract(toolPoint)).normalize();
-    	Rotation toolRotation = new Rotation(RotationOrder.ZYX, RotationConvention.VECTOR_OPERATOR, toolPosition.getAlphaRad(), toolPosition.getBetaRad(),toolPosition.getGammaRad());
-    	Vector3D toolLine = toolRotation.applyTo(new Vector3D(0,0,1)).normalize();
-    	Rotation toolToTargetRotation = new Rotation(toolLine, eeToTargetLine);
-    	Rotation finalRotation = toolToTargetRotation.compose(toolRotation, RotationConvention.VECTOR_OPERATOR);
-    	double[] res = finalRotation.getAngles(RotationOrder.ZYX, RotationConvention.VECTOR_OPERATOR);
-    	
-    	double angleToTarget = Math.toDegrees(Vector3D.angle(toolLine, eeToTargetLine));
+    	rotationHandler.calculateRotation(toolPosition, targetPoint);
+    	double[] res = rotationHandler.getZYXRotation_rad();
+    	double angleToTarget = rotationHandler.getAngle_deg();
     	
     	if(angleToTarget > maxStartingAngle_deg)
     	{
@@ -886,7 +909,7 @@ public class ROSSmartServo extends ROSBaseApplication {
     	boolean zAxisInDanger = false;
     	
     	
-    	double actualOverride = SpeedLimits.getOverrideRecution();
+    	double originalOverride = SpeedLimits.getOverrideRecution();
 
 		SpeedLimits.setOverrideRecution(0.1, false);
     	
@@ -957,8 +980,7 @@ public class ROSSmartServo extends ROSBaseApplication {
 	    		// z_distance limit handling
 		    	
 		    	toolPosition = robot.getCurrentCartesianPosition(toolFrame);
-	        	goalOrientation = toolPosition.copy();
-	        	toolPoint = new Vector3D(toolPosition.getX(), toolPosition.getY(), toolPosition.getZ());
+	        	Vector3D toolPoint = new Vector3D(toolPosition.getX(), toolPosition.getY(), toolPosition.getZ());
 		    	
 		    	double zDistance = toolPoint.getZ() - targetPoint.getZ();
 		    	
@@ -973,16 +995,12 @@ public class ROSSmartServo extends ROSBaseApplication {
 		    		zAxisInDanger = false;
 		    	}else if(!zAxisInDanger){
 	    		
-		    		eeToTargetLine = (targetPoint.subtract(toolPoint)).normalize();
-			    	toolRotation = new Rotation(RotationOrder.ZYX, RotationConvention.VECTOR_OPERATOR, toolPosition.getAlphaRad(), toolPosition.getBetaRad(),toolPosition.getGammaRad());
-			    	toolLine = toolRotation.applyTo(new Vector3D(0,0,1)).normalize();
-			    	toolToTargetRotation = new Rotation(toolLine, eeToTargetLine);
-			    	finalRotation = toolToTargetRotation.compose(toolRotation, RotationConvention.VECTOR_OPERATOR);
-			    	
-			    	
-			    	res = finalRotation.getAngles(RotationOrder.ZYX, RotationConvention.VECTOR_OPERATOR);
-		    		
-		    		linearMotion.getRuntime().setDestination(robot.getCurrentCartesianPosition(toolFrame).setAlphaRad(res[0]).setBetaRad(res[1]).setGammaRad(res[2]));
+		        	rotationHandler.calculateRotation(toolPosition, targetPoint);
+		        	res = rotationHandler.getZYXRotation_rad();
+		        	angleToTarget = rotationHandler.getAngle_deg();
+		 
+		        	if(angleToTarget > HGM_minRotationDifAngle_deg)
+		        		linearMotion.getRuntime().setDestination(robot.getCurrentCartesianPosition(toolFrame).setAlphaRad(res[0]).setBetaRad(res[1]).setGammaRad(res[2]));
 		    	}
 	    	}
 	    	ThreadUtil.milliSleep(16);	
@@ -991,37 +1009,113 @@ public class ROSSmartServo extends ROSBaseApplication {
 		
 		Logger.info("exiting free handguiding mode...");
 		
-		motion.getRuntime().changeControlModeSettings(handGuidanceAxisLimitMode);
+		linearMotion.getRuntime().changeControlModeSettings(handGuidanceAxisLimitMode);
 		
 		ThreadUtil.milliSleep(333);
 		
-		motion = controlModeHandler.changeSmartServoControlMode(motion, new PositionControlMode(true));
+		linearMotion = controlModeHandler.changeSmartServoControlMode(linearMotion, new PositionControlMode(true));
 		
-		SpeedLimits.setOverrideRecution(actualOverride, false); 
+		SpeedLimits.setOverrideRecution(originalOverride, false); 
   }
   
   private void applySonicToPatient(){
+	  // deactivate trigger
+	  
+	  	final double CARTESIAN_VELOCITY = 150.0; // mm/s
+		final double CONTACT_VELOCITY = 12.0; // mm/s
+	    final double CONSTANT_FORCE = 1; // Newtons
+	    final double STOP_FORCE_TRESHHOLD = -1.5; // Newtons
+	  
+	    
+	    CartesianImpedanceControlMode applyForceControlMode = new CartesianImpedanceControlMode();
+		
+		
+	    applyForceControlMode.parametrize(CartDOF.TRANSL).setStiffness(2000).setDamping(1);
+	    applyForceControlMode.parametrize(CartDOF.Z).setStiffness(700);
+	    applyForceControlMode.parametrize(CartDOF.ROT).setStiffness(300).setDamping(1);
+	    applyForceControlMode.setNullSpaceDamping(1);
+	    applyForceControlMode.setNullSpaceStiffness(100);
+	    applyForceControlMode.parametrize(CartDOF.Z).setAdditionalControlForce(0.9);
+	    
+	  
+	    RotationHandler rotationHandler = new RotationHandler();
 	  
 	  	double originalOverride = SpeedLimits.getOverrideRecution();
 	  
-		SpeedLimits.setOverrideRecution(1.0, false);  
+		SpeedLimits.setOverrideRecution(0.2, false);  
 			
-		Frame initialFrame = robot.getCurrentCartesianPosition(toolFrame);
+		Frame initialToolPosition = robot.getCurrentCartesianPosition(toolFrame);
 	  
-		
+		double minAngleThreshhold_deg = 40.1;
 		// get target
 		
+		geometry_msgs.PoseStamped target = subscriber.currentTarget;
+
+		// TODO target/source oder source/target
 		
 		// angle to target
-	  
+		//Vector3D targetPosition = new Vector3D(target.getPose().getPosition().getX(), target.getPose().getPosition().getY(), target.getPose().getPosition().getZ());
+		Vector3D targetPosition = new Vector3D(initialToolPosition.getX(), initialToolPosition.getY(), initialToolPosition.getZ() - 100);
 		
+		rotationHandler.calculateRotation(initialToolPosition, targetPosition);
+    	
+    	double angleToTarget = rotationHandler.getAngle_deg();
+    	
+    	Logger.info("initial angle to target: " + angleToTarget);
+    	// expecting the angle to be correct!!!
+    	if(angleToTarget > minAngleThreshhold_deg){
+    		Logger.error("angle between tool and target is o high");
+    	}
+    	
+    	ForceComponentCondition zForceDetected = new ForceComponentCondition(toolFrame, CoordinateAxis.Z, STOP_FORCE_TRESHHOLD, 10);
+        
+        
+        
+        //move in tool x direction until force in tool x direction is detected
+        System.out.println("Moving in z direction until contact...");
+        IMotionContainer motionContainer = toolFrame.move(linRel(0, 0, 100,toolFrame).setCartVelocity(CONTACT_VELOCITY).breakWhen(zForceDetected));
+    	
+        if (null == motionContainer.getFiredBreakConditionInfo()
+                || !motionContainer.getFiredBreakConditionInfo().getFiredCondition().equals(zForceDetected)) {
+            Logger.error("No contact detected, stopping.");
+            return;
+        }
+    	
+    	Logger.info("collision detected");
+    	
+    	rotationHandler.calculateRotation(robot.getCurrentCartesianPosition(toolFrame), targetPosition);    	
+    	angleToTarget = rotationHandler.getAngle_deg();
+        
+    	Logger.info("new angle: " + angleToTarget);
+
+    	
+    	Logger.info("adjusting...");
+    	
+    	
+    	robot.move(lin(rotationHandler.applyRotation(robot.getCurrentCartesianPosition(toolFrame))));
+    
+    	rotationHandler.calculateRotation(robot.getCurrentCartesianPosition(toolFrame), targetPosition);
+    	
+    	angleToTarget = rotationHandler.getAngle_deg();
+        
+    	Logger.info("new angle: " + angleToTarget);
+    	
+    	activateMotionMode(CommandType.SMART_SERVO_CARTESIAN_POSE_LIN);
 		
-		// move till conact detected
-	  
-		// angle to target
-	  
-		// until: angle < threshhold
-		// adjust angle with clarius data 
+		linearMotion = controlModeHandler.changeSmartServoControlMode(linearMotion, applyForceControlMode);
+    	
+		
+		while(subscriber.applySonicToPatient){
+			
+			rotationHandler.calculateRotation(robot.getCurrentCartesianPosition(toolFrame), targetPosition);
+	    	
+	    	angleToTarget = rotationHandler.getAngle_deg();
+	        
+	    	Logger.info("current angle to target: " + angleToTarget);
+			
+			ThreadUtil.milliSleep(500);
+		}
+		
 		
 		SpeedLimits.setOverrideRecution(originalOverride, false);
   }
