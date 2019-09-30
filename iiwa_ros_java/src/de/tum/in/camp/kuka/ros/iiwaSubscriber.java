@@ -53,6 +53,7 @@ import org.ros.time.TimeProvider;
 import com.kuka.roboticsAPI.deviceModel.LBR;
 import com.kuka.roboticsAPI.deviceModel.LBRE1Redundancy;
 import com.kuka.roboticsAPI.geometricModel.AbstractFrame;
+import com.kuka.roboticsAPI.geometricModel.CartDOF;
 import com.kuka.roboticsAPI.geometricModel.Frame;
 import com.kuka.roboticsAPI.geometricModel.ObjectFrame;
 import com.kuka.roboticsAPI.geometricModel.redundancy.IRedundancyCollection;
@@ -103,7 +104,8 @@ public class iiwaSubscriber extends AbstractNodeMain {
   @SuppressWarnings("unused")
   private ServiceServer<iiwa_msgs.SetEndpointFrameRequest, iiwa_msgs.SetEndpointFrameResponse> endpointFrameServer = null;
   private ServiceResponseBuilder<iiwa_msgs.SetEndpointFrameRequest, iiwa_msgs.SetEndpointFrameResponse> endpointFrameCallback = null;
-
+   
+  
   // ROSJava Subscribers for iiwa_msgs
   private Subscriber<geometry_msgs.PoseStamped> cartesianPoseSubscriber;
   private Subscriber<geometry_msgs.PoseStamped> cartesianPoseLinSubscriber;
@@ -112,8 +114,9 @@ public class iiwaSubscriber extends AbstractNodeMain {
   private Subscriber<iiwa_msgs.JointPositionVelocity> jointPositionVelocitySubscriber;
   private Subscriber<iiwa_msgs.JointVelocity> jointVelocitySubscriber;
   private Subscriber<std_msgs.Bool> applySonicToPatientSubscriber;
-  private Subscriber<std_msgs.Bool> activateFreeHandGuidingModeSubscriber;
-  private Subscriber<std_msgs.Bool> activateFocusedHandGuidingModeSubscriber;
+  private Subscriber<std_msgs.Empty> activateFreeHandGuidingModeSubscriber;
+  private Subscriber<std_msgs.Empty> deactivateHandGuidingModeSubscriber;
+  private Subscriber<std_msgs.Empty> activateTrajectoryHandGuidingModeSubscriber;
   private Subscriber<geometry_msgs.Vector3Stamped> focusedHandGuidingTargetSubscriber;
   private Subscriber<std_msgs.Bool> clariusButtonSubscriber;
   private Subscriber<std_msgs.Float32> robotDistanceSubscriber;
@@ -151,7 +154,11 @@ public class iiwaSubscriber extends AbstractNodeMain {
   public geometry_msgs.PoseStamped currentTarget = null;
   public boolean activateFreeHandGuidingMode = false;
   public boolean activateFocusedHandGuidingMode = false;
-  public float lastDistanceBetweenRobots_mm = -1;
+  public CartDOF hgm_axes = CartDOF.TRANSL;
+  
+  
+  // TODO set to -1
+  public float lastDistanceBetweenRobots_mm = 100000;
 
   /**
    * Constructs a series of ROS subscribers for messages defined by the iiwa_msgs ROS package.
@@ -268,6 +275,7 @@ public class iiwaSubscriber extends AbstractNodeMain {
   public void setEndpointFrameCallback(ServiceResponseBuilder<iiwa_msgs.SetEndpointFrameRequest, iiwa_msgs.SetEndpointFrameResponse> callback) {
     endpointFrameCallback = callback;
   }
+
 
   /**
    * Returns the last PoseStamped message received from the /command/CartesianPose topic. Returns null if no
@@ -480,12 +488,13 @@ public class iiwaSubscriber extends AbstractNodeMain {
     jointPositionSubscriber = connectedNode.newSubscriber(iiwaName + "/command/JointPosition", iiwa_msgs.JointPosition._TYPE, hint);
     jointPositionVelocitySubscriber = connectedNode.newSubscriber(iiwaName + "/command/JointPositionVelocity", iiwa_msgs.JointPositionVelocity._TYPE, hint);
     jointVelocitySubscriber = connectedNode.newSubscriber(iiwaName + "/command/JointVelocity", iiwa_msgs.JointVelocity._TYPE, hint);
-    applySonicToPatientSubscriber = connectedNode.newSubscriber(iiwaName + "/service/applySonicToPatient", std_msgs.Bool._TYPE, hint);
+    applySonicToPatientSubscriber = connectedNode.newSubscriber(iiwaName + "/service/activateSonicPatientContact", std_msgs.Bool._TYPE, hint);
     
-    activateFreeHandGuidingModeSubscriber = connectedNode.newSubscriber(iiwaName + "/service/activateFocusedHandGuidingMode", std_msgs.Bool._TYPE, hint);
-    activateFocusedHandGuidingModeSubscriber = connectedNode.newSubscriber(iiwaName + "/command/activateFocusedHandGuidingMode", std_msgs.Bool._TYPE, hint);
+    activateFreeHandGuidingModeSubscriber = connectedNode.newSubscriber(iiwaName + "/service/activate/hgm/free", std_msgs.Empty._TYPE, hint);
+    deactivateHandGuidingModeSubscriber = connectedNode.newSubscriber(iiwaName + "/service/deactivate/hgm", std_msgs.Empty._TYPE, hint);
+    activateTrajectoryHandGuidingModeSubscriber = connectedNode.newSubscriber(iiwaName + "/service/activate/hgm/trajectory", std_msgs.Empty._TYPE, hint);
     focusedHandGuidingTargetSubscriber = connectedNode.newSubscriber(iiwaName + "/focusedHandGuidingTarget", geometry_msgs.Vector3Stamped._TYPE, hint);
-    clariusButtonSubscriber = connectedNode.newSubscriber("KeyboardInput/ButtonPressed", std_msgs.Bool._TYPE, hint);
+    clariusButtonSubscriber = connectedNode.newSubscriber("/NOPE/KeyboardInput/ButtonPressed", std_msgs.Bool._TYPE, hint);
     robotDistanceSubscriber = connectedNode.newSubscriber("combined/state/distance_between_robots", std_msgs.Float32._TYPE, hint);
     tfListener = new TransformListener(connectedNode);
 
@@ -595,17 +604,31 @@ public class iiwaSubscriber extends AbstractNodeMain {
         }
       });
 
-    activateFreeHandGuidingModeSubscriber.addMessageListener(new MessageListener<std_msgs.Bool>() {
+    activateFreeHandGuidingModeSubscriber.addMessageListener(new MessageListener<std_msgs.Empty>() {
         @Override
-        public void onNewMessage(std_msgs.Bool b) {
-          activateFreeHandGuidingMode = b.getData();
+        public void onNewMessage(std_msgs.Empty e) {
+        	if(!activateFocusedHandGuidingMode) {
+        		hgm_axes = CartDOF.TRANSL;
+        		activateFreeHandGuidingMode = true;
+        	}
         }
       });
     
-    activateFocusedHandGuidingModeSubscriber.addMessageListener(new MessageListener<std_msgs.Bool>() {
+    activateTrajectoryHandGuidingModeSubscriber.addMessageListener(new MessageListener<std_msgs.Empty>() {
         @Override
-        public void onNewMessage(std_msgs.Bool b) {
-          activateFocusedHandGuidingMode = b.getData();
+        public void onNewMessage(std_msgs.Empty e) {
+          if(!activateFocusedHandGuidingMode)
+          {
+        	hgm_axes = CartDOF.Z;
+        	activateFreeHandGuidingMode = true;
+          }
+        }
+      });
+    
+    deactivateHandGuidingModeSubscriber.addMessageListener(new MessageListener<std_msgs.Empty>() {
+        @Override
+        public void onNewMessage(std_msgs.Empty e) {
+          activateFreeHandGuidingMode = false;
         }
       });
     

@@ -63,6 +63,11 @@ public class iiwaPublisher extends AbstractNodeMain {
   private boolean publishJointState = false;
   // DestinationReachedFlag publisher
   private Publisher<std_msgs.Time> destinationReachedPublisher;
+  
+  
+  private Publisher<std_msgs.Float32> anglePublisher;
+  public boolean publishAngles = false;
+  public float currentAngle = 0;
   // Publishes the status of the Media Flange button.
   // private Publisher<std_msgs.Bool> mediaFlangeButtonPublisher; // MEDIAFLANGEIO
   // Name to use to build the name of the ROS topics
@@ -184,6 +189,8 @@ public class iiwaPublisher extends AbstractNodeMain {
     jointStatesPublisher = connectedNode.newPublisher(robotName + "/joint_states", sensor_msgs.JointState._TYPE);
 
     destinationReachedPublisher = connectedNode.newPublisher(robotName + "/state/DestinationReached", std_msgs.Time._TYPE);
+    
+    anglePublisher = connectedNode.newPublisher(robotName + "/state/currentAngle", std_msgs.Float32._TYPE);
 
     // mediaFlangeButtonPublisher = connectedNode.newPublisher(robotName + "/state/MFButtonState",
     // std_msgs.Bool._TYPE); // MEDIAFLANGEIO
@@ -254,6 +261,12 @@ public class iiwaPublisher extends AbstractNodeMain {
       helper.getCurrentJointState(js, robot);
       helper.incrementSeqNumber(js.getHeader());
       jointStatesPublisher.publish(js);
+    }
+    
+    if(this.publishAngles){
+    	std_msgs.Float32 f = helper.buildMessage(std_msgs.Float32._TYPE);
+    	f.setData(this.currentAngle);
+    	anglePublisher.publish(f);
     }
 
     
