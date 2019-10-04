@@ -30,6 +30,7 @@ package de.tum.in.camp.kuka.ros;
 import org.ros.namespace.GraphName;
 import org.ros.node.AbstractNodeMain;
 import org.ros.node.ConnectedNode;
+import org.ros.node.service.ServiceServer;
 import org.ros.node.topic.Publisher;
 import org.ros.time.TimeProvider;
 
@@ -64,8 +65,13 @@ public class iiwaPublisher extends AbstractNodeMain {
   // DestinationReachedFlag publisher
   private Publisher<std_msgs.Time> destinationReachedPublisher;
   
+  private Publisher<std_msgs.String> robotPositionPublisher; 
   
   private Publisher<std_msgs.Float32> anglePublisher;
+
+  
+  private Publisher<std_msgs.Bool> toolgeGestureRecognitionPublisher;
+  
   public boolean publishAngles = false;
   public float currentAngle = 0;
   // Publishes the status of the Media Flange button.
@@ -190,7 +196,11 @@ public class iiwaPublisher extends AbstractNodeMain {
 
     destinationReachedPublisher = connectedNode.newPublisher(robotName + "/state/DestinationReached", std_msgs.Time._TYPE);
     
+    robotPositionPublisher = connectedNode.newPublisher(robotName + "/position", std_msgs.String._TYPE);
+    
     anglePublisher = connectedNode.newPublisher(robotName + "/state/currentAngle", std_msgs.Float32._TYPE);
+    
+    toolgeGestureRecognitionPublisher = connectedNode.newPublisher(robotName + "/service/GestureRecognitionEnabled", std_msgs.Bool._TYPE);
 
     // mediaFlangeButtonPublisher = connectedNode.newPublisher(robotName + "/state/MFButtonState",
     // std_msgs.Bool._TYPE); // MEDIAFLANGEIO
@@ -307,5 +317,17 @@ public class iiwaPublisher extends AbstractNodeMain {
     final std_msgs.String msg = iiwaButtonPublisher.newMessage();
     msg.setData(name + "_released");
     iiwaButtonPublisher.publish(msg);
+  }
+  
+  public void publishRobotPositionState(String name) {
+	    final std_msgs.String msg = robotPositionPublisher.newMessage();
+	    msg.setData(name);
+	    robotPositionPublisher.publish(msg);
+  }
+  
+  public void setGestureRecognitionEnabledState(boolean state) {
+	  std_msgs.Bool bool_msgs = toolgeGestureRecognitionPublisher.newMessage();
+	  bool_msgs.setData(state);
+	  toolgeGestureRecognitionPublisher.publish(bool_msgs);
   }
 }

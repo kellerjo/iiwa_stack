@@ -61,6 +61,7 @@ import org.ros.node.service.ServiceResponseBuilder;
 import org.ros.rosjava.tf.Transform;
 import org.ros.rosjava.tf.pubsub.TransformListener;
 
+import params.Das;
 import params.HGM;
 
 import utils.RotationHandler;
@@ -422,6 +423,8 @@ public class ROSSmartServo extends ROSBaseApplication {
     HGM.axisLimits[4] = 170;
     HGM.axisLimits[5] = 120;
     HGM.axisLimits[6] = 175;
+    
+    SpeedLimits.setOverrideRecution(Das.defaultApplicationSpeedOverride, false);
   }
 
   /**
@@ -525,9 +528,9 @@ public class ROSSmartServo extends ROSBaseApplication {
     if(subscriber.activateFreeHandGuidingMode){
     	freeHandGuiding(subscriber.hgm_axes);
     }
-    else if(subscriber.activateFocusedHandGuidingMode){
-    	focusedHandGuiding();
-    }
+    //else if(subscriber.activateFocusedHandGuidingMode){
+    //	focusedHandGuiding();
+    //}
     else if(subscriber.applySonicToPatient){
 		applySonicToPatient();	
 	}
@@ -699,23 +702,96 @@ public class ROSSmartServo extends ROSBaseApplication {
     motions.cartesianVelocityMotion(motion, commandVelocity, endpointFrame);
   }
   
+  /**
+   * 
+   * @param target
+   * @param source
+   * @param trans the translational degrees of freedom of traget NOT to be overwritten by source
+   * @param rot the rotational degrees of freedom of traget NOT to be overwritten by source
+   * @return modified target frame
+   */
+  Frame replaceDOF(Frame target, Frame source, CartDOF trans, CartDOF rot) {
+	  
+	  if(trans == null){
+		  target.setX(source.getX());
+		  target.setY(source.getY());
+		  target.setZ(source.getZ());
+	  }else{
+		  if(trans == CartDOF.TRANSL){
+		  }
+		  else if(trans == CartDOF.X){
+			 
+			  target.setY(source.getY());
+			  target.setZ(source.getZ());
+		  }
+		  else if(trans == CartDOF.Y) {
+			  target.setX(source.getX());
+			  target.setZ(source.getZ());
+		  }
+		  else if(trans == CartDOF.Z) {
+			  target.setX(source.getX());
+			  target.setY(source.getY());
+		  }
+		  else {
+			  Logger.error("wrong translational degree of freedom specified for hgm");
+		  }
+	  }
+
+	  
+	  if(rot == null) {
+		  target.setAlphaRad(source.getAlphaRad());
+		  target.setBetaRad(source.getBetaRad());
+		  target.setGammaRad(source.getGammaRad());
+	  }else{
+		  if(rot == CartDOF.ROT){
+		  }
+		  else if(rot == CartDOF.A) {
+			  target.setBetaRad(source.getBetaRad());
+			  target.setGammaRad(source.getGammaRad());
+		  }else if(rot == CartDOF.B) {
+			  target.setAlphaRad(source.getAlphaRad());
+			  target.setGammaRad(source.getGammaRad());
+		  }else if(rot == CartDOF.C) {
+			  target.setBetaRad(source.getBetaRad());
+			  target.setAlphaRad(source.getAlphaRad());
+		  } else {
+			  Logger.error("wrong rotational degree of freedom specified for hgm");
+		  }
+	  }
+	 
+	  
+	  
+	  return target;
+  }
+  
+  
+  /**
+   * TODO add rot
+   * @param free translational degrees of freedom to be freed (can not be orientaional)
+   */
   void freeHandGuiding(CartDOF free){
 	  
 	// setup
 	Logger.info("starting handguiding mode...");
 	
+	
+	// set ros intern values for hand guiding
 	publisher.sendActivateCollisionCheckerSignal(true);
+	publisher.setGestureRecognitionEnabledState(false);
+	publisher.publishRobotPositionState("other");
 	
 	double originalOverride = SpeedLimits.getOverrideRecution();
 	  
-	SpeedLimits.setOverrideRecution(1.0, false);  
+	SpeedLimits.setOverrideRecution(1, false);  
 		
+	
+	// setup handugiding variables and parameters
 	Frame initialFrame = robot.getCurrentCartesianPosition(toolFrame);
 	
 	CartesianImpedanceControlMode handGuidanceControlMode = new CartesianImpedanceControlMode();
 	CartesianImpedanceControlMode handGuidanceAxisLimitMode = new CartesianImpedanceControlMode();
 	
-	handGuidanceControlMode.parametrize(CartDOF.TRANSL).setStiffness(300).setDamping(1);
+	handGuidanceControlMode.parametrize(CartDOF.TRANSL).setStiffness(5000).setDamping(1);
 	handGuidanceControlMode.parametrize(CartDOF.ROT).setStiffness(300).setDamping(1);
 	handGuidanceControlMode.parametrize(free).setStiffness(0);
 	handGuidanceControlMode.setNullSpaceDamping(1);
@@ -723,6 +799,8 @@ public class ROSSmartServo extends ROSBaseApplication {
 	
 	handGuidanceAxisLimitMode.parametrize(CartDOF.TRANSL).setStiffness(3000).setDamping(1);
 	handGuidanceAxisLimitMode.parametrize(CartDOF.ROT).setStiffness(300).setDamping(1);
+	
+	boolean otherRobotActive = false;
 	
 	
 	double[] external_joint_torques = new double[7];
@@ -798,16 +876,30 @@ public class ROSSmartServo extends ROSBaseApplication {
     		
     		// check danger of robot collision
     		
-    		if(!robot_collision_danger && (subscriber.lastDistanceBetweenRobots_mm < HGM_maxDistanceBetweenRobots_mm)){
+    		if(otherRobotActive && (!robot_collision_danger && (subscriber.lastDistanceBetweenRobots_mm < HGM_maxDistanceBetweenRobots_mm))){
     			robot_collision_danger = true;
     			motion.getRuntime().changeControlModeSettings(handGuidanceAxisLimitMode);
     			Logger.warn("robot is too close to other robot");
-    		}else if(robot_collision_danger && subscriber.lastDistanceBetweenRobots_mm >= HGM_distanceBetweenRobotBackToSafety_mm){
+    		}else if(otherRobotActive && (robot_collision_danger && subscriber.lastDistanceBetweenRobots_mm >= HGM_distanceBetweenRobotBackToSafety_mm)){
     			robot_collision_danger = false;
     			Logger.info("releasing the robot again");
     			motion.getRuntime().changeControlModeSettings(handGuidanceControlMode);
-    		}else if(!robot_collision_danger || (robot_collision_danger && (subscriber.lastDistanceBetweenRobots_mm - prevRobotDist) > HGM_minRobotDistMoveback_mm)){
-    			motion.getRuntime().setDestination(robot.getCurrentCartesianPosition(toolFrame).setAlphaRad(initialFrame.getAlphaRad()).setBetaRad(initialFrame.getBetaRad()).setGammaRad(initialFrame.getGammaRad()));
+    		}else if(!otherRobotActive || (!robot_collision_danger || (robot_collision_danger && (subscriber.lastDistanceBetweenRobots_mm - prevRobotDist) > HGM_minRobotDistMoveback_mm))){
+    			//motion.getRuntime().setDestination(robot.getCurrentCartesianPosition(toolFrame).setAlphaRad(initialFrame.getAlphaRad()).setBetaRad(initialFrame.getBetaRad()).setGammaRad(initialFrame.getGammaRad()));
+    			
+    			//TODO add other axes
+    			if(free == CartDOF.Z){
+	    			Frame f = robot.getCurrentCartesianPosition(toolFrame, initialFrame);
+	    			f.setX(0);
+	    			f.setY(0);
+	    			f.setAlphaRad(0);
+	    			f.setBetaRad(0);
+	    			f.setGammaRad(0);
+	    			motion.getRuntime().setDestination(f);
+    			}else{
+    				motion.getRuntime().setDestination(robot.getCurrentCartesianPosition(toolFrame).setAlphaRad(initialFrame.getAlphaRad()).setBetaRad(initialFrame.getBetaRad()).setGammaRad(initialFrame.getGammaRad()));
+    				//motion.getRuntime().setDestination(replaceDOF(robot.getCurrentCartesianPosition(toolFrame), initialFrame, free, null));
+    			}
     		}
     	}
     	prevRobotDist = subscriber.lastDistanceBetweenRobots_mm;
@@ -819,12 +911,24 @@ public class ROSSmartServo extends ROSBaseApplication {
 	
 	motion.getRuntime().changeControlModeSettings(handGuidanceAxisLimitMode);
 	
+	
+	// ros settings for after hgm
+	//TODO this has to be deleted, the robot should check for himself if he is too close to the patient after every position switch
+	if(free == CartDOF.Z)
+	{
+		publisher.publishRobotPositionState("patient");
+	}
+	
 	ThreadUtil.milliSleep(333);
 	
 	motion = controlModeHandler.changeSmartServoControlMode(motion, new PositionControlMode(true));
 	
+
+	
+	
 	SpeedLimits.setOverrideRecution(originalOverride, false);
 	publisher.sendActivateCollisionCheckerSignal(false);
+	publisher.setGestureRecognitionEnabledState(true);
 	
   }
   

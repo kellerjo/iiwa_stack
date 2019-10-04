@@ -490,9 +490,9 @@ public class iiwaSubscriber extends AbstractNodeMain {
     jointVelocitySubscriber = connectedNode.newSubscriber(iiwaName + "/command/JointVelocity", iiwa_msgs.JointVelocity._TYPE, hint);
     applySonicToPatientSubscriber = connectedNode.newSubscriber(iiwaName + "/service/activateSonicPatientContact", std_msgs.Bool._TYPE, hint);
     
-    activateFreeHandGuidingModeSubscriber = connectedNode.newSubscriber(iiwaName + "/service/activate/hgm/free", std_msgs.Empty._TYPE, hint);
-    deactivateHandGuidingModeSubscriber = connectedNode.newSubscriber(iiwaName + "/service/deactivate/hgm", std_msgs.Empty._TYPE, hint);
-    activateTrajectoryHandGuidingModeSubscriber = connectedNode.newSubscriber(iiwaName + "/service/activate/hgm/trajectory", std_msgs.Empty._TYPE, hint);
+    activateFreeHandGuidingModeSubscriber = connectedNode.newSubscriber("/" + iiwaName + "/service/activate/hgm/free", std_msgs.Empty._TYPE, hint);
+    deactivateHandGuidingModeSubscriber = connectedNode.newSubscriber("/" + iiwaName + "/service/deactivate/hgm", std_msgs.Empty._TYPE, hint);
+    activateTrajectoryHandGuidingModeSubscriber = connectedNode.newSubscriber("/" + iiwaName + "/service/activate/hgm/trajectory", std_msgs.Empty._TYPE, hint);
     focusedHandGuidingTargetSubscriber = connectedNode.newSubscriber(iiwaName + "/focusedHandGuidingTarget", geometry_msgs.Vector3Stamped._TYPE, hint);
     clariusButtonSubscriber = connectedNode.newSubscriber("/NOPE/KeyboardInput/ButtonPressed", std_msgs.Bool._TYPE, hint);
     robotDistanceSubscriber = connectedNode.newSubscriber("combined/state/distance_between_robots", std_msgs.Float32._TYPE, hint);
@@ -607,7 +607,8 @@ public class iiwaSubscriber extends AbstractNodeMain {
     activateFreeHandGuidingModeSubscriber.addMessageListener(new MessageListener<std_msgs.Empty>() {
         @Override
         public void onNewMessage(std_msgs.Empty e) {
-        	if(!activateFocusedHandGuidingMode) {
+        	Logger.info("ping");
+        	if(!activateFreeHandGuidingMode) {
         		hgm_axes = CartDOF.TRANSL;
         		activateFreeHandGuidingMode = true;
         	}
@@ -617,7 +618,7 @@ public class iiwaSubscriber extends AbstractNodeMain {
     activateTrajectoryHandGuidingModeSubscriber.addMessageListener(new MessageListener<std_msgs.Empty>() {
         @Override
         public void onNewMessage(std_msgs.Empty e) {
-          if(!activateFocusedHandGuidingMode)
+          if(!activateFreeHandGuidingMode)
           {
         	hgm_axes = CartDOF.Z;
         	activateFreeHandGuidingMode = true;
